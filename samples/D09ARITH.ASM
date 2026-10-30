@@ -1,0 +1,199 @@
+* ======================================================================
+* D09ARITH.ASM - MULTI-BYTE ARITHMETIC, BCD, SHIFTS            (self-checking)
+*
+* Principle: the 6800 has only 8-bit ALU ops; wider math chains them with the
+* carry flag: ADDA/ADCA, SUBA/SBCA. LDAA/STAA do NOT change carry, so you may
+* load and store between the two halves. Shifts move bits through carry.
+* EXPECT-OK 6
+* ======================================================================
+*
+* ---- hardware + minimal console kernel (MC6850 ACIA) ----
+ACIAS   EQU   $8008             ACIA status / control
+ACIAD   EQU   $8009             ACIA data
+TDRE    EQU   $02
+CR      EQU   $0D
+LF      EQU   $0A
+SPACE   EQU   $20
+*
+        ORG   $E000
+RESET   LDS   #$01FF
+        LDAA  #$03              ACIA master reset
+        STAA  ACIAS
+        LDAA  #$15              /16, 8N1
+        STAA  ACIAS
+        JMP   MAIN
+PUTC    PSHA
+PUTC1   LDAA  ACIAS
+        ANDA  #TDRE
+        BEQ   PUTC1
+        PULA
+        STAA  ACIAD
+        RTS
+PRSTR   LDAA  0,X
+        BEQ   PRSTR9
+        JSR   PUTC
+        INX
+        BRA   PRSTR
+PRSTR9  RTS
+PRHEX   PSHA
+        LSRA
+        LSRA
+        LSRA
+        LSRA
+        BSR   PRNIB
+        PULA
+        ANDA  #$0F
+PRNIB   ADDA  #$90
+        DAA
+        ADCA  #$40
+        DAA
+        JMP   PUTC
+* RESULT: call right after a compare. Z=1 (equal) prints OK, else FAIL.
+RESULT  BNE   RFAIL
+        LDX   #OKM
+        JSR   PRSTR
+        RTS
+RFAIL   LDX   #FAILM
+        JSR   PRSTR
+        RTS
+OKM     FCB   "OK",CR,LF,0
+FAILM   FCB   "FAIL",CR,LF,0
+NULLINT RTI
+A32     EQU   $30               4-byte big-endian operands in zero page
+B32     EQU   $34
+R32     EQU   $38
+TMP     EQU   $3C               scratch word
+*
+MAIN    LDX   #HDR
+        JSR   PRSTR
+*
+* 1. 32-bit add:  $0001FFFF + $00000001 = $00020000
+        LDX   #T1
+        JSR   PRSTR
+        LDX   #$0001
+        STX   A32
+        LDX   #$FFFF
+        STX   A32+2
+        LDX   #$0000
+        STX   B32
+        LDX   #$0001
+        STX   B32+2
+        LDAA  A32+3
+        ADDA  B32+3
+        STAA  R32+3
+        LDAA  A32+2
+        ADCA  B32+2
+        STAA  R32+2
+        LDAA  A32+1
+        ADCA  B32+1
+        STAA  R32+1
+        LDAA  A32
+        ADCA  B32
+        STAA  R32
+        LDX   R32               high word must be $0002
+        CPX   #$0002
+        BNE   BAD1
+        LDX   R32+2             low word must be $0000
+        CPX   #$0000
+BAD1    JSR   RESULT
+*
+* 2. 16-bit negate: 0 - $0001 = $FFFF (two's complement)
+        LDX   #T2
+        JSR   PRSTR
+        CLRA
+        CLRB
+        SUBB  #1
+        SBCA  #0
+        CMPA  #$FF
+        BNE   BAD2
+        CMPB  #$FF
+BAD2    JSR   RESULT
+*
+* 3. BCD: $19 + $28 = $47 with DAA
+        LDX   #T3
+        JSR   PRSTR
+        LDAA  #$19
+        ADDA  #$28
+        DAA
+        CMPA  #$47
+        JSR   RESULT
+*
+* 4. multiply by 10 with shifts: 123*10 = 1230 = $04CE  (x*8 + x*2)
+        LDX   #T4
+        JSR   PRSTR
+        LDAA  #0
+        LDAB  #123
+        ASLB                    x*2
+        ROLA
+        STAB  R32+1             keep x*2
+        STAA  R32
+        ASLB                    x*4
+        ROLA
+        ASLB                    x*8
+        ROLA
+        ADDB  R32+1
+        ADCA  R32
+        CMPA  #$04
+        BNE   BAD4
+        CMPB  #$CE
+BAD4    JSR   RESULT
+*
+* 5. 8 x 8 multiply by shift-and-add: 13 * 11 = 143 = $8F
+        LDX   #T5
+        JSR   PRSTR
+        LDAA  #13
+        LDAB  #11
+        JSR   MUL8
+        CMPB  #$8F
+        BNE   BAD5
+        CMPA  #0
+BAD5    JSR   RESULT
+*
+* 6. divide by repeated subtraction: 100 / 7 = 14 remainder 2
+        LDX   #T6
+        JSR   PRSTR
+        LDAA  #100
+        LDAB  #0
+DIV1    CMPA  #7
+        BCS   DIVEND            remainder < divisor
+        SUBA  #7
+        INCB
+        BRA   DIV1
+DIVEND  CMPB  #14
+        BNE   BAD6
+        CMPA  #2
+BAD6    JSR   RESULT
+        WAI
+*
+* MUL8: A * B -> A:B (16-bit product). Clobbers TMP, R32+1.
+MUL8    STAA  TMP+1             multiplicand (16 bits so it can shift left)
+        CLR   TMP
+        STAB  R32+1             multiplier
+        CLRA
+        CLRB                    A:B = product
+        LDX   #8
+M81     LSR   R32+1             next multiplier bit -> carry
+        BCC   M82
+        ADDB  TMP+1
+        ADCA  TMP
+M82     ASL   TMP+1             multiplicand * 2 (ASL/ROL have no direct mode:
+        ROL   TMP               acpx picks extended addressing by itself)
+        DEX
+        BNE   M81
+        RTS
+*
+HDR     FCB   "D09ARITH",CR,LF,0
+T1      FCB   " 32-BIT ADD ........ ",0
+T2      FCB   " 16-BIT NEGATE ..... ",0
+T3      FCB   " BCD ADD + DAA ..... ",0
+T4      FCB   " X*10 BY SHIFTS .... ",0
+T5      FCB   " 8x8 MULTIPLY ...... ",0
+T6      FCB   " DIVIDE BY SUBTRACT  ",0
+*
+* ---- interrupt / reset vectors (the last 8 bytes of the 64K map) ----
+        ORG   $FFF8
+        FDB   NULLINT      ; IRQ
+        FDB   NULLINT      ; SWI
+        FDB   NULLINT      ; NMI
+        FDB   RESET        ; RESET
+        END

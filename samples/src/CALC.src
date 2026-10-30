@@ -1,0 +1,233 @@
+* ======================================================================
+* CALC.ASM - 16-BIT INTEGER CALCULATOR                   (acpx 6800 sample)
+*
+* Type   12+30   900-1   250*4   1000/7   1000%7   A*2   H   Q
+* A means "the previous answer". Unsigned 16-bit arithmetic: overflow and
+* divide-by-zero are reported, a negative difference is printed with '-'.
+* Shows: multi-byte add/sub with carry, shift-and-add multiply, restoring
+* divide, ASL/ROL on memory, operator dispatch, and the decimal I/O kernel.
+* ======================================================================
+@HEADER@
+A1      EQU   USER              first operand (2 bytes)
+A2      EQU   USER+2           second operand (2 bytes)
+RES     EQU   USER+4           result (2 bytes)
+REM     EQU   USER+6           remainder (2 bytes)
+LAST    EQU   USER+8           previous answer (2 bytes)
+OPER    EQU   USER+10          operator character
+CNT     EQU   USER+11          loop counter
+XCARRY  EQU   USER+12          17th bit of the divide remainder
+NEG     EQU   USER+13          1 = print a minus sign
+*
+        ORG   $E000
+@KERNEL@
+*
+MAIN    LDX   #BANNER
+        JSR   PRSTR
+        CLR   LAST
+        CLR   LAST+1
+NEXT    LDX   #PROMPT
+        JSR   PRSTR
+        JSR   GETLINE
+        LDAA  LINLEN
+        BEQ   NEXT              empty line: ask again
+        LDAA  BUF
+        CMPA  #'Q
+        BEQ   GOQUIT
+        CMPA  #'H
+        BEQ   GOHELP
+        LDX   #BUF
+        JSR   ARG               first operand
+        BCS   SYNTAX
+        LDAA  NUM
+        STAA  A1
+        LDAA  NUM+1
+        STAA  A1+1
+        LDAA  0,X               the operator
+        STAA  OPER
+        BEQ   SYNTAX            nothing after the number
+        INX
+        JSR   ARG               second operand
+        BCS   SYNTAX
+        LDAA  0,X
+        BNE   SYNTAX            junk at the end
+        LDAA  NUM
+        STAA  A2
+        LDAA  NUM+1
+        STAA  A2+1
+        CLR   NEG
+*
+        LDAA  OPER              ---- dispatch on the operator
+        CMPA  #'+
+        BEQ   DOADD
+        CMPA  #'-
+        BEQ   DOSUB
+        CMPA  #'*
+        BEQ   DOMUL
+        CMPA  #'/
+        BEQ   DODIV
+        CMPA  #'%
+        BEQ   GOMOD
+SYNTAX  LDX   #SYNMSG
+        JSR   PRSTR
+        BRA   NEXT
+* Relative branches reach only -128..+127 bytes. A target that is too far
+* away needs a "trampoline": branch to a nearby JMP, which can go anywhere.
+GOQUIT  JMP   QUIT
+GOHELP  JMP   HELP
+GOOVF   JMP   OVFLOW
+GODZ    JMP   DIVZERO
+GOMOD   JMP   DOMOD
+*
+DOADD   LDAA  A1+1
+        ADDA  A2+1
+        STAA  RES+1
+        LDAA  A1
+        ADCA  A2
+        STAA  RES
+        BCS   GOOVF
+        BRA   SHOW
+*
+DOSUB   LDAA  A1+1              A1 - A2, 16 bits
+        SUBA  A2+1
+        STAA  RES+1
+        LDAA  A1
+        SBCA  A2
+        STAA  RES
+        BCC   SHOW              no borrow: result is positive
+        INC   NEG               borrow: print "-" and negate (0 - RES)
+        CLRA
+        SUBA  RES+1
+        STAA  RES+1
+        CLRA
+        SBCA  RES
+        STAA  RES
+        BRA   SHOW
+*
+DOMUL   CLR   RES               shift-and-add; A1 = multiplicand, A2 = multiplier
+        CLR   RES+1
+MUL1    LDAA  A2
+        ORAA  A2+1
+        BEQ   SHOW              multiplier exhausted
+        LSR   A2                A2 >>= 1, bit 0 -> carry
+        ROR   A2+1
+        BCC   MUL2
+        LDAA  RES+1             RES += A1
+        ADDA  A1+1
+        STAA  RES+1
+        LDAA  RES
+        ADCA  A1
+        STAA  RES
+        BCS   GOOVF
+MUL2    LDAA  A2
+        ORAA  A2+1
+        BEQ   SHOW              done: skip the final (needless) shift
+        ASL   A1+1              A1 <<= 1
+        ROL   A1
+        BCS   GOOVF
+        BRA   MUL1
+*
+DODIV   JSR   DIV16
+        BCS   GODZ
+        LDAA  A1                quotient was built in A1
+        STAA  RES
+        LDAA  A1+1
+        STAA  RES+1
+        BRA   SHOW
+DOMOD   JSR   DIV16
+        BCS   GODZ
+        LDAA  REM
+        STAA  RES
+        LDAA  REM+1
+        STAA  RES+1
+        BRA   SHOW
+*
+SHOW    LDX   #EQUALS
+        JSR   PRSTR
+        TST   NEG
+        BEQ   SHOW2
+        LDAA  #'-
+        JSR   PUTC
+SHOW2   LDAA  RES
+        STAA  NUM
+        LDAA  RES+1
+        STAA  NUM+1
+        STAA  LAST+1            remember the answer for "A"
+        LDAA  RES
+        STAA  LAST
+        JSR   PRDEC
+        JSR   CRLF
+        JMP   NEXT
+OVFLOW  LDX   #OVFMSG
+        JSR   PRSTR
+        JMP   NEXT
+DIVZERO LDX   #DZMSG
+        JSR   PRSTR
+        JMP   NEXT
+HELP    LDX   #HELPMSG
+        JSR   PRSTR
+        JMP   NEXT
+QUIT    LDX   #BYEMSG
+        JSR   PRSTR
+        WAI
+*
+* ARG: X -> operand. 'A' = previous answer, else a decimal number.
+ARG     LDAA  0,X
+        CMPA  #'A
+        BNE   ARG1
+        LDAA  LAST
+        STAA  NUM
+        LDAA  LAST+1
+        STAA  NUM+1
+        INX
+        CLC
+        RTS
+ARG1    JMP   PARSE             tail call: PARSE returns straight to our caller
+*
+* DIV16: A1 / A2 -> quotient in A1, remainder in REM.  C=1 if A2 = 0.
+DIV16   LDAA  A2
+        ORAA  A2+1
+        BNE   DV0
+        SEC
+        RTS
+DV0     CLR   REM
+        CLR   REM+1
+        LDAA  #16
+        STAA  CNT
+DV1     ASL   A1+1              shift the dividend left into the remainder
+        ROL   A1
+        ROL   REM+1
+        ROL   REM
+        LDAA  #0
+        ROLA                    A = the bit that fell off the remainder
+        STAA  XCARRY
+        LDAA  REM+1             TMP = REM - A2
+        SUBA  A2+1
+        STAA  TMP+1
+        LDAA  REM
+        SBCA  A2
+        STAA  TMP
+        BCC   DV2               no borrow: remainder >= divisor
+        TST   XCARRY
+        BEQ   DV3               borrow and no 17th bit: remainder < divisor
+DV2     LDAA  TMP               commit the subtraction
+        STAA  REM
+        LDAA  TMP+1
+        STAA  REM+1
+        INC   A1+1              quotient bit (bit 0 is free after the shift)
+DV3     DEC   CNT
+        BNE   DV1
+        CLC
+        RTS
+*
+BANNER  FCB   CR,LF,"*** CALC - 16-BIT CALCULATOR FOR THE MC6800 ***",CR,LF
+        FCB   "ENTER  N+N  N-N  N*N  N/N  N%N   (A = last answer, H = help, Q = quit)",CR,LF,0
+PROMPT  FCB   "> ",0
+EQUALS  FCB   "= ",0
+SYNMSG  FCB   "? SYNTAX ERROR - TYPE H FOR HELP",CR,LF,0
+OVFMSG  FCB   "? OVERFLOW (RESULT EXCEEDS 65535)",CR,LF,0
+DZMSG   FCB   "? DIVISION BY ZERO",CR,LF,0
+HELPMSG FCB   "  12+30    ADD            900-1000  SUBTRACT (NEGATIVE ALLOWED)",CR,LF
+        FCB   "  250*4    MULTIPLY       1000/7    QUOTIENT",CR,LF
+        FCB   "  1000%7   REMAINDER      A*2       USE THE LAST ANSWER",CR,LF,0
+BYEMSG  FCB   "BYE. (MACHINE HALTED)",CR,LF,0
+@VECTORS@
