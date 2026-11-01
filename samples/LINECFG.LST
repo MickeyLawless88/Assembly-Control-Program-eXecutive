@@ -1,0 +1,915 @@
+ASSEMBLY LISTING - SOURCE FILE LINECFG.ASM
+
+ADDR  CODE          LINE  SOURCE STATEMENT
+----  ------------  ----  ----------------
+0000                   2  ; LINECFG          ADM-31 plugin ROM ($E000-$E7FF), >
+0000                   3  ;
+0000                   4  ; "ADMENU" -- lettered direct-command line configura>
+0000                   5  ; Mickey's own sketch. Each letter performs its acti>
+0000                   6  ; (sends the real ESC sequence, or updates internal >
+0000                   7  ; redraws, rather than staging changes behind a sepa>
+0000                   8  ;
+0000                   9  ; What's real vs. stubbed, honestly:
+0000                  10  ;   A/B (conversation/block), C/D (half/full duplex)>
+0000                  11  ;   prefix) -- confirmed: sent as real ESC sequences>
+0000                  12  ;   firmware's own processor via the traced zero-pag>
+0000                  13  ;   E/F/G (parity/data bits/stop bits) -- confirmed >
+0000                  14  ;   independent: the MC6850 ACIA at $7A00 packs all >
+0000                  15  ;   3-bit word-select field with exactly 8 valid com>
+0000                  16  ;   "7 data bits, no parity" exists on this chip). E>
+0000                  17  ;   through that same shared set; changing one can v>
+0000                  18  ;   other two on screen, because on the real hardwar>
+0000                  19  ;   H (baud rate) -- NOT implemented. Tracing the AC>
+0000                  20  ;   just now showed the counter-divide bits (the one>
+0000                  21  ;   select baud) are hardcoded by stock firmware, no>
+0000                  22  ;   software-selected at all -- baud is very likely >
+0000                  23  ;   clock source this ROM has no path to control. Me>
+0000                  24  ;   marked "N/A" rather than faked.
+0000                  25  ;   I (local echo) -- stub. Likely a stock-firmware >
+0000                  26  ;   location hasn't been traced.
+0000                  27  ;   K (execute polling/opt ROM) -- stub. Would need >
+0000                  28  ;   terminal's own polling-mode entry sequence works>
+0000                  29  ;   L (show settings) -- shows this ROM's own tracke>
+0000                  30  ;   live readback of stock firmware's internal state>
+0000                  31  ;   M (reset to defaults) -- resets tracked state an>
+0000                  32  ;   default ESC sequences.
+0000                  33  ;   Q added (not in the original sketch): quit witho>
+0000                  34  ;   anything further, straight back to normal termin>
+0000                  35  ;
+0000                  36  ; ==================================================>
+0000                  37  ; HARDWARE I/O
+0000                  38  ; ==================================================>
+0000  =7000           39  HALT            EQU     $7000
+0000  =7800           40  PIA1            EQU     $7800
+0000  =7802           41  PIA1B           EQU     $7802
+0000  =7A00           42  ACIA            EQU     $7A00
+0000  =8000           43  CRTRAM          EQU     $8000
+0000  =0050           44  SCRW            EQU     80
+0000  =0018           45  SCRH            EQU     24
+0000  =8780           46  CRTEND          EQU     $8780           ; CRTRAM + S>
+0000                  47  ; NOT left as an expression (this
+0000                  48  ; assembler does not apply operator
+0000                  49  ; precedence to "CRTRAM+SCRW*SCRH",
+0000                  50  ; confirmed by simulation)
+0000  =0067           51  ESCVEC          EQU     $67             ; zero-page >
+0000                  52  ; real ESC/char processor, set up by
+0000                  53  ; ROM B's own boot init -- confirmed
+0000                  54  ; by direct trace, not assumed
+0000                  55  
+0000                  56  ; ==================================================>
+0000                  57  ; ZERO PAGE -- menu state
+0000                  58  ; ==================================================>
+0000  =0121           59  CONVMODEV       EQU     $0121           ; 0=conversa>
+0000  =0122           60  DUPLEXV         EQU     $0122           ; 0=full, 1=>
+0000  =0123           61  WORDSELV        EQU     $0123           ; 0-7, MC685>
+0000                  62  ; (shared by parity/data/stop)
+0000  =0124           63  PERSV           EQU     $0124           ; 0-9 person>
+0000  =0125           64  ECHOV           EQU     $0125           ; 0/1, local>
+0000  =012A           65  BAUDV           EQU     $012A           ; 0-2, ACIA >
+0000                  66  ; (/1,/16,/64) -- honest divide-ratio labels, not fa>
+0000                  67  ; numbers; real baud needs an external clock frequen>
+0000  =0126           68  GAMEINIT        EQU     $0126
+0000  =0127           69  DONEFLAG        EQU     $0127
+0000  =0128           70  FLASHMSG        EQU     $0128           ; 2 bytes -->
+0000                  71  ; status string shown after the
+0000                  72  ; last action, or 0 for none
+0000                  73  
+0000  =0130           74  TMPA            EQU     $0130
+0000  =0131           75  TMPB            EQU     $0131
+0000  =0132           76  TMPX            EQU     $0132
+0000  =0134           77  ADRPTR          EQU     $0134
+0000  =0136           78  ROWARG          EQU     $0136
+0000  =0137           79  COLARG          EQU     $0137
+0000  =0138           80  STRPTR          EQU     $0138
+0000                  81  
+0000                  82  ; ==================================================>
+0000                  83  ; ADM-31 PLUGIN ROM HEADER
+0000                  84  ; ==================================================>
+E000                  85          ORG     $E000
+E000  54 4A           86          FCB     $54,$4A                 ; "TJ" plugi>
+E002                  87  KEYENTRY
+E002  F6 01 26        88          LDAB    GAMEINIT
+E005  C1 A5           89          CMPB    #$A5
+E007  26 0A           90          BNE     KE_SKIP
+E009  F6 01 27        91          LDAB    DONEFLAG
+E00C  26 05           92          BNE     KE_SKIP
+E00E  36              93          PSHA
+E00F  BD E1 7C        94          JSR     KEYDISP
+E012  32              95          PULA
+E013  39              96  KE_SKIP RTS
+E014                  97  
+E03C                  98          ORG     $E03C
+E03C  7E E5 4B        99          JMP     RESET
+E03F                 100  
+E03F                 101  ; ==================================================>
+E03F                 102  SCRNOUT
+E03F  B7 70 00       103          STAA    HALT
+E042  01             104          NOP
+E043  A7 00          105          STAA    0,X
+E045  39             106          RTS
+E046                 107  
+E07D                 108          ORG     $E07D
+E07D  39             109  PLUGCB2 RTS
+E08A                 110          ORG     $E08A
+E08A  39             111  ESCCB   RTS
+E0CA                 112          ORG     $E0CA
+E0CA  39             113  PLUGCB3 RTS
+E0CB                 114  
+E0CB                 115  ; ==================================================>
+E0CB                 116  ; ESCSEND -- send one character through stock firmwa>
+E0CB                 117  ; processor via the confirmed zero-page vector. Char>
+E0CB                 118  ; ==================================================>
+E0CB                 119  ESCSEND
+E0CB  DE 67          120          LDX     ESCVEC
+E0CD  AD 00          121          JSR     0,X
+E0CF  39             122          RTS
+E0D0                 123  
+E0D0                 124  ; ==================================================>
+E0D0                 125  ; PRTSTR -- print a null-terminated string at X to (>
+E0D0                 126  ; ==================================================>
+E0D0                 127  PRTSTR
+E0D0  FF 01 38       128          STX     STRPTR
+E0D3  FE 01 38       129  PS_LOOP LDX     STRPTR
+E0D6  A6 00          130          LDAA    0,X
+E0D8  27 11          131          BEQ     PS_DONE
+E0DA  08             132          INX
+E0DB  FF 01 38       133          STX     STRPTR
+E0DE  36             134          PSHA
+E0DF  BD E1 07       135          JSR     CALCADR
+E0E2  32             136          PULA
+E0E3  BD E0 3F       137          JSR     SCRNOUT
+E0E6  7C 01 37       138          INC     COLARG
+E0E9  20 E8          139          BRA     PS_LOOP
+E0EB  39             140  PS_DONE RTS
+E0EC                 141  
+E0EC                 142  ; RBORDER -- write a closing "|" at the fixed right->
+E0EC                 143  ; matching the top/bottom border width. Cheaper in b>
+E0EC                 144  ; every menu-item string out to that width with trai>
+E0EC                 145  RBORDER
+E0EC  86 33          146          LDAA    #51
+E0EE  B7 01 37       147          STAA    COLARG
+E0F1  BD E1 07       148          JSR     CALCADR
+E0F4  86 7C          149          LDAA    #$7C
+E0F6  BD E0 3F       150          JSR     SCRNOUT
+E0F9  39             151          RTS
+E0FA                 152  
+E0FA                 153  ; SETCURSOR -- position the real hardware cursor at >
+E0FA                 154  ; Confirmed, not assumed: traced two live writes in >
+E0FA                 155  ; $7F0C is set to 79 (last column, 80-wide screen) a>
+E0FA                 156  ; 23 (last row, 24-row screen) as part of end-of-lin>
+E0FA                 157  ; wrap logic -- $7F0C=column, $7F0D=row, raw 0-index>
+E0FA                 158  ; as this ROM's own COLARG/ROWARG. Without this, the>
+E0FA                 159  ; cursor sits wherever stock firmware last left it (>
+E0FA                 160  ; the whole time this menu is up, unrelated to anyth>
+E0FA                 161  SETCURSOR
+E0FA  B6 01 37       162          LDAA    COLARG
+E0FD  B7 7F 0C       163          STAA    $7F0C
+E100  B6 01 36       164          LDAA    ROWARG
+E103  B7 7F 0D       165          STAA    $7F0D
+E106  39             166          RTS
+E107                 167  
+E107                 168  ; ==================================================>
+E107                 169  ; CALCADR -- (ROWARG, COLARG) -> CRTRAM address in X.
+E107                 170  ; ==================================================>
+E107                 171  CALCADR
+E107  7F 01 34       172          CLR     ADRPTR
+E10A  B6 01 36       173          LDAA    ROWARG
+E10D  B7 01 35       174          STAA    ADRPTR+1
+E110  78 01 35       175          ASL     ADRPTR+1
+E113  79 01 34       176          ROL     ADRPTR
+E116  78 01 35       177          ASL     ADRPTR+1
+E119  79 01 34       178          ROL     ADRPTR
+E11C  78 01 35       179          ASL     ADRPTR+1
+E11F  79 01 34       180          ROL     ADRPTR
+E122  78 01 35       181          ASL     ADRPTR+1
+E125  79 01 34       182          ROL     ADRPTR
+E128  B6 01 34       183          LDAA    ADRPTR
+E12B  F6 01 35       184          LDAB    ADRPTR+1
+E12E  36             185          PSHA
+E12F  37             186          PSHB
+E130  78 01 35       187          ASL     ADRPTR+1
+E133  79 01 34       188          ROL     ADRPTR
+E136  78 01 35       189          ASL     ADRPTR+1
+E139  79 01 34       190          ROL     ADRPTR
+E13C  33             191          PULB
+E13D  FB 01 35       192          ADDB    ADRPTR+1
+E140  F7 01 35       193          STAB    ADRPTR+1
+E143  32             194          PULA
+E144  B9 01 34       195          ADCA    ADRPTR
+E147  B7 01 34       196          STAA    ADRPTR
+E14A  B6 01 37       197          LDAA    COLARG
+E14D  BB 01 35       198          ADDA    ADRPTR+1
+E150  B7 01 35       199          STAA    ADRPTR+1
+E153  B6 01 34       200          LDAA    ADRPTR
+E156  89 00          201          ADCA    #0
+E158  B7 01 34       202          STAA    ADRPTR
+E15B  B6 01 34       203          LDAA    ADRPTR
+E15E  8B 80          204          ADDA    #$80
+E160  B7 01 34       205          STAA    ADRPTR
+E163  FE 01 34       206          LDX     ADRPTR
+E166  39             207          RTS
+E167                 208  
+E167                 209  ; ==================================================>
+E167                 210  CLRSCRN
+E167  7F 01 36       211          CLR     ROWARG
+E16A  7F 01 37       212          CLR     COLARG
+E16D  CE 80 00       213          LDX     #CRTRAM
+E170  86 20          214  CS_LOOP LDAA    #$20
+E172  BD E0 3F       215          JSR     SCRNOUT
+E175  08             216          INX
+E176  8C 87 80       217          CPX     #CRTEND
+E179  26 F5          218          BNE     CS_LOOP
+E17B  39             219          RTS
+E17C                 220  
+E17C                 221  ; ==================================================>
+E17C                 222  ; KEYDISP -- direct lettered commands, each acting i>
+E17C                 223  ; ==================================================>
+E17C                 224  KEYDISP
+E17C  81 61          225          CMPA    #$61                    ; 'a' -> con>
+E17E  26 18          226          BNE     KD_B
+E180  86 00          227          LDAA    #0
+E182  B7 01 21       228          STAA    CONVMODEV
+E185  86 1B          229          LDAA    #$1B
+E187  BD E0 CB       230          JSR     ESCSEND
+E18A  86 43          231          LDAA    #$43
+E18C  BD E0 CB       232          JSR     ESCSEND
+E18F  7F 01 28       233          CLR     FLASHMSG
+E192  7F 01 29       234          CLR     FLASHMSG+1
+E195  7E E2 D8       235          JMP     KD_RDRAW
+E198  81 62          236  KD_B    CMPA    #$62                    ; 'b' -> blo>
+E19A  26 18          237          BNE     KD_C
+E19C  86 01          238          LDAA    #1
+E19E  B7 01 21       239          STAA    CONVMODEV
+E1A1  86 1B          240          LDAA    #$1B
+E1A3  BD E0 CB       241          JSR     ESCSEND
+E1A6  86 42          242          LDAA    #$42
+E1A8  BD E0 CB       243          JSR     ESCSEND
+E1AB  7F 01 28       244          CLR     FLASHMSG
+E1AE  7F 01 29       245          CLR     FLASHMSG+1
+E1B1  7E E2 D8       246          JMP     KD_RDRAW
+E1B4  81 63          247  KD_C    CMPA    #$63                    ; 'c' -> hal>
+E1B6  26 1D          248          BNE     KD_D
+E1B8  86 01          249          LDAA    #1
+E1BA  B7 01 22       250          STAA    DUPLEXV
+E1BD  86 1B          251          LDAA    #$1B
+E1BF  BD E0 CB       252          JSR     ESCSEND
+E1C2  86 44          253          LDAA    #$44
+E1C4  BD E0 CB       254          JSR     ESCSEND
+E1C7  86 48          255          LDAA    #$48
+E1C9  BD E0 CB       256          JSR     ESCSEND
+E1CC  7F 01 28       257          CLR     FLASHMSG
+E1CF  7F 01 29       258          CLR     FLASHMSG+1
+E1D2  7E E2 D8       259          JMP     KD_RDRAW
+E1D5  81 64          260  KD_D    CMPA    #$64                    ; 'd' -> ful>
+E1D7  26 1D          261          BNE     KD_E
+E1D9  86 00          262          LDAA    #0
+E1DB  B7 01 22       263          STAA    DUPLEXV
+E1DE  86 1B          264          LDAA    #$1B
+E1E0  BD E0 CB       265          JSR     ESCSEND
+E1E3  86 44          266          LDAA    #$44
+E1E5  BD E0 CB       267          JSR     ESCSEND
+E1E8  86 46          268          LDAA    #$46
+E1EA  BD E0 CB       269          JSR     ESCSEND
+E1ED  7F 01 28       270          CLR     FLASHMSG
+E1F0  7F 01 29       271          CLR     FLASHMSG+1
+E1F3  7E E2 D8       272          JMP     KD_RDRAW
+E1F6  81 65          273  KD_E    CMPA    #$65                    ; 'e'/'f'/'g>
+E1F8  27 08          274          BEQ     KD_WSEL
+E1FA  81 66          275          CMPA    #$66
+E1FC  27 04          276          BEQ     KD_WSEL
+E1FE  81 67          277          CMPA    #$67
+E200  26 23          278          BNE     KD_H
+E202  B6 01 23       279  KD_WSEL LDAA    WORDSELV
+E205  4C             280          INCA
+E206  84 07          281          ANDA    #7
+E208  B7 01 23       282          STAA    WORDSELV
+E20B  BD E2 17       283          JSR     APPLYACIA
+E20E  7F 01 28       284          CLR     FLASHMSG
+E211  7F 01 29       285          CLR     FLASHMSG+1
+E214  7E E2 D8       286          JMP     KD_RDRAW
+E217                 287  
+E217                 288  ; APPLYACIA -- compute and write the real ACIA contr>
+E217                 289  ; WORDSELV and BAUDV. Verified against stock firmwar>
+E217                 290  ; value ($C0 | switch-word-select | fixed-divide) -->
+E217                 291  ; fixed bits (RXIE=1, transmit-control=10) that stoc>
+E217                 292  ; holds constant; only word-select and counter-divid>
+E217                 293  APPLYACIA
+E217  B6 01 23       294          LDAA    WORDSELV
+E21A  48             295          ASLA
+E21B  48             296          ASLA
+E21C  8A C0          297          ORAA    #$C0
+E21E  BA 01 2A       298          ORAA    BAUDV
+E221  B7 7A 00       299          STAA    ACIA
+E224  39             300          RTS
+E225  81 68          301  KD_H    CMPA    #$68                    ; 'h' -> ste>
+E227  26 18          302          BNE     KD_I
+E229  B6 01 2A       303          LDAA    BAUDV
+E22C  4C             304          INCA
+E22D  81 03          305          CMPA    #3
+E22F  2D 01          306          BLT     KD_HST
+E231  4F             307          CLRA
+E232  B7 01 2A       308  KD_HST  STAA    BAUDV
+E235  BD E2 17       309          JSR     APPLYACIA
+E238  7F 01 28       310          CLR     FLASHMSG
+E23B  7F 01 29       311          CLR     FLASHMSG+1
+E23E  7E E2 D8       312          JMP     KD_RDRAW
+E241  81 69          313  KD_I    CMPA    #$69                    ; 'i' -> loc>
+E243  26 11          314          BNE     KD_J
+E245  B6 01 25       315          LDAA    ECHOV
+E248  88 01          316          EORA    #1
+E24A  B7 01 25       317          STAA    ECHOV
+E24D  7F 01 28       318          CLR     FLASHMSG
+E250  7F 01 29       319          CLR     FLASHMSG+1
+E253  7E E2 D8       320          JMP     KD_RDRAW
+E256  81 6A          321  KD_J    CMPA    #$6A                    ; 'j' -> ste>
+E258  26 27          322          BNE     KD_K
+E25A  B6 01 24       323          LDAA    PERSV
+E25D  4C             324          INCA
+E25E  81 0A          325          CMPA    #10
+E260  2D 01          326          BLT     KD_JST
+E262  4F             327          CLRA
+E263  B7 01 24       328  KD_JST  STAA    PERSV
+E266  86 1B          329          LDAA    #$1B
+E268  BD E0 CB       330          JSR     ESCSEND
+E26B  86 4F          331          LDAA    #$4F
+E26D  BD E0 CB       332          JSR     ESCSEND
+E270  B6 01 24       333          LDAA    PERSV
+E273  8B 30          334          ADDA    #$30
+E275  BD E0 CB       335          JSR     ESCSEND
+E278  CE E7 BC       336          LDX     #MSGPERS
+E27B  BD E2 DC       337          JSR     SETFLASH
+E27E  7E E2 D8       338          JMP     KD_RDRAW
+E281  81 6B          339  KD_K    CMPA    #$6B                    ; 'k' -> exe>
+E283  26 09          340          BNE     KD_L
+E285  CE E7 C5       341          LDX     #MSGNOPOLL
+E288  BD E2 DC       342          JSR     SETFLASH
+E28B  7E E2 D8       343          JMP     KD_RDRAW
+E28E  81 6C          344  KD_L    CMPA    #$6C                    ; 'l' -> sho>
+E290  26 09          345          BNE     KD_M                    ; already sh>
+E292  CE E7 CF       346          LDX     #MSGSHOWN
+E295  BD E2 DC       347          JSR     SETFLASH
+E298  7E E2 D8       348          JMP     KD_RDRAW
+E29B  81 6D          349  KD_M    CMPA    #$6D                    ; 'm' -> res>
+E29D  26 0C          350          BNE     KD_Q
+E29F  BD E2 E0       351          JSR     SETDEFLT
+E2A2  CE E7 DB       352          LDX     #MSGRESET
+E2A5  BD E2 DC       353          JSR     SETFLASH
+E2A8  7E E2 D8       354          JMP     KD_RDRAW
+E2AB  81 71          355  KD_Q    CMPA    #$71                    ; 'q' -> qui>
+E2AD  26 1A          356          BNE     KD_T
+E2AF  BD E1 67       357          JSR     CLRSCRN
+E2B2  86 0B          358          LDAA    #11
+E2B4  B7 01 36       359          STAA    ROWARG
+E2B7  86 1C          360          LDAA    #28
+E2B9  B7 01 37       361          STAA    COLARG
+E2BC  CE E7 E1       362          LDX     #EXITMSG
+E2BF  BD E0 D0       363          JSR     PRTSTR
+E2C2  86 01          364          LDAA    #1
+E2C4  B7 01 27       365          STAA    DONEFLAG
+E2C7  20 12          366          BRA     KD_DONE
+E2C9  81 74          367  KD_T    CMPA    #$74                    ; 't' -> ent>
+E2CB  26 0E          368          BNE     KD_DONE                ; jump to sto>
+E2CD                 369  ; real post-self-test hand-off
+E2CD                 370  ; ($E9D5: prints "Test Complete",
+E2CD                 371  ; does its own PIA1B/SW_BNK1
+E2CD                 372  ; setup, falls into the real
+E2CD                 373  ; vector-table init at $EC00 --
+E2CD                 374  ; confirmed by direct trace, the
+E2CD                 375  ; same code path a real boot
+E2CD                 376  ; takes, not a guessed re-entry)
+E2CD  BD E1 67       377          JSR     CLRSCRN
+E2D0  86 01          378          LDAA    #1
+E2D2  B7 01 27       379          STAA    DONEFLAG
+E2D5  7E E9 D5       380          JMP     $E9D5
+E2D8                 381  KD_RDRAW
+E2D8  BD E3 22       382          JSR     DRAWMENU
+E2DB  39             383  KD_DONE RTS
+E2DC                 384  
+E2DC                 385  ; SETFLASH -- X = pointer to a status string, rememb>
+E2DC                 386  ; DRAWMENU to show at the bottom of the screen.
+E2DC                 387  SETFLASH
+E2DC  FF 01 28       388          STX     FLASHMSG
+E2DF  39             389          RTS
+E2E0                 390  
+E2E0                 391  ; SETDEFLT -- reset tracked state to defaults (full >
+E2E0                 392  ; mode, 8N1, personality 0) and resend the correspon>
+E2E0                 393  SETDEFLT
+E2E0  7F 01 21       394          CLR     CONVMODEV
+E2E3  7F 01 22       395          CLR     DUPLEXV
+E2E6  86 05          396          LDAA    #5                      ; index 101 >
+E2E8  B7 01 23       397          STAA    WORDSELV
+E2EB  86 01          398          LDAA    #1
+E2ED  B7 01 2A       399          STAA    BAUDV
+E2F0  7F 01 24       400          CLR     PERSV
+E2F3  7F 01 25       401          CLR     ECHOV
+E2F6  BD E2 17       402          JSR     APPLYACIA
+E2F9  86 1B          403          LDAA    #$1B
+E2FB  BD E0 CB       404          JSR     ESCSEND
+E2FE  86 43          405          LDAA    #$43
+E300  BD E0 CB       406          JSR     ESCSEND
+E303  86 1B          407          LDAA    #$1B
+E305  BD E0 CB       408          JSR     ESCSEND
+E308  86 44          409          LDAA    #$44
+E30A  BD E0 CB       410          JSR     ESCSEND
+E30D  86 46          411          LDAA    #$46
+E30F  BD E0 CB       412          JSR     ESCSEND
+E312  86 1B          413          LDAA    #$1B
+E314  BD E0 CB       414          JSR     ESCSEND
+E317  86 4F          415          LDAA    #$4F
+E319  BD E0 CB       416          JSR     ESCSEND
+E31C  86 30          417          LDAA    #$30
+E31E  BD E0 CB       418          JSR     ESCSEND
+E321  39             419          RTS
+E322                 420  
+E322                 421  ; ==================================================>
+E322                 422  ; DRAWMENU -- the bordered ADMenu screen.
+E322                 423  ; ==================================================>
+E322                 424  DRAWMENU
+E322  BD E1 67       425          JSR     CLRSCRN
+E325                 426  
+E325  86 01          427          LDAA    #1
+E327  B7 01 36       428          STAA    ROWARG
+E32A  86 09          429          LDAA    #9
+E32C  B7 01 37       430          STAA    COLARG
+E32F  CE E5 B5       431          LDX     #BORDERT
+E332  BD E0 D0       432          JSR     PRTSTR
+E335                 433  
+E335  86 02          434          LDAA    #2
+E337  B7 01 36       435          STAA    ROWARG
+E33A  86 09          436          LDAA    #9
+E33C  B7 01 37       437          STAA    COLARG
+E33F  CE E6 0B       438          LDX     #TITLE1
+E342  BD E0 D0       439          JSR     PRTSTR
+E345  86 03          440          LDAA    #3
+E347  B7 01 36       441          STAA    ROWARG
+E34A  86 09          442          LDAA    #9
+E34C  B7 01 37       443          STAA    COLARG
+E34F  CE E6 37       444          LDX     #TITLE2
+E352  BD E0 D0       445          JSR     PRTSTR
+E355  86 04          446          LDAA    #4
+E357  B7 01 36       447          STAA    ROWARG
+E35A  86 09          448          LDAA    #9
+E35C  B7 01 37       449          STAA    COLARG
+E35F  CE E5 E0       450          LDX     #BORDERM
+E362  BD E0 D0       451          JSR     PRTSTR
+E365                 452  
+E365  86 05          453          LDAA    #5
+E367  B7 01 36       454          STAA    ROWARG
+E36A  86 09          455          LDAA    #9
+E36C  B7 01 37       456          STAA    COLARG
+E36F  CE E6 63       457          LDX     #LN_A
+E372  BD E0 D0       458          JSR     PRTSTR
+E375  BD E0 EC       459          JSR     RBORDER
+E378  86 06          460          LDAA    #6
+E37A  B7 01 36       461          STAA    ROWARG
+E37D  86 09          462          LDAA    #9
+E37F  B7 01 37       463          STAA    COLARG
+E382  CE E6 75       464          LDX     #LN_B
+E385  BD E0 D0       465          JSR     PRTSTR
+E388  BD E0 EC       466          JSR     RBORDER
+E38B  86 07          467          LDAA    #7
+E38D  B7 01 36       468          STAA    ROWARG
+E390  86 09          469          LDAA    #9
+E392  B7 01 37       470          STAA    COLARG
+E395  CE E6 85       471          LDX     #LN_C
+E398  BD E0 D0       472          JSR     PRTSTR
+E39B  BD E0 EC       473          JSR     RBORDER
+E39E  86 08          474          LDAA    #8
+E3A0  B7 01 36       475          STAA    ROWARG
+E3A3  86 09          476          LDAA    #9
+E3A5  B7 01 37       477          STAA    COLARG
+E3A8  CE E6 94       478          LDX     #LN_D
+E3AB  BD E0 D0       479          JSR     PRTSTR
+E3AE  BD E0 EC       480          JSR     RBORDER
+E3B1  86 09          481          LDAA    #9
+E3B3  B7 01 36       482          STAA    ROWARG
+E3B6  86 09          483          LDAA    #9
+E3B8  B7 01 37       484          STAA    COLARG
+E3BB  CE E6 A3       485          LDX     #LN_E
+E3BE  BD E0 D0       486          JSR     PRTSTR
+E3C1  BD E0 EC       487          JSR     RBORDER
+E3C4  86 0A          488          LDAA    #10
+E3C6  B7 01 36       489          STAA    ROWARG
+E3C9  86 09          490          LDAA    #9
+E3CB  B7 01 37       491          STAA    COLARG
+E3CE  CE E6 AF       492          LDX     #LN_F
+E3D1  BD E0 D0       493          JSR     PRTSTR
+E3D4  BD E0 EC       494          JSR     RBORDER
+E3D7  86 0B          495          LDAA    #11
+E3D9  B7 01 36       496          STAA    ROWARG
+E3DC  86 09          497          LDAA    #9
+E3DE  B7 01 37       498          STAA    COLARG
+E3E1  CE E6 BE       499          LDX     #LN_G
+E3E4  BD E0 D0       500          JSR     PRTSTR
+E3E7  B6 01 23       501          LDAA    WORDSELV
+E3EA  48             502          ASLA
+E3EB  48             503          ASLA                            ; A = WORDSE>
+E3EC                 504  ; entry is exactly 4 bytes: 3
+E3EC                 505  ; chars + null)
+E3EC  CE E7 5E       506          LDX     #FMTTBL
+E3EF  FF 01 34       507          STX     ADRPTR
+E3F2  BB 01 35       508          ADDA    ADRPTR+1
+E3F5  B7 01 35       509          STAA    ADRPTR+1
+E3F8  B6 01 34       510          LDAA    ADRPTR
+E3FB  89 00          511          ADCA    #0
+E3FD  B7 01 34       512          STAA    ADRPTR
+E400  FE 01 34       513          LDX     ADRPTR
+E403  BD E0 D0       514          JSR     PRTSTR
+E406  BD E0 EC       515          JSR     RBORDER
+E409  86 0C          516          LDAA    #12
+E40B  B7 01 36       517          STAA    ROWARG
+E40E  86 09          518          LDAA    #9
+E410  B7 01 37       519          STAA    COLARG
+E413  CE E6 D5       520          LDX     #LN_H
+E416  BD E0 D0       521          JSR     PRTSTR
+E419  B6 01 2A       522          LDAA    BAUDV
+E41C  48             523          ASLA
+E41D  48             524          ASLA                            ; A = BAUDV*>
+E41E                 525  ; entry is 4 bytes: 3 chars +
+E41E                 526  ; null, same layout as FMTTBL)
+E41E  CE E7 7E       527          LDX     #BAUDTBL
+E421  FF 01 34       528          STX     ADRPTR
+E424  BB 01 35       529          ADDA    ADRPTR+1
+E427  B7 01 35       530          STAA    ADRPTR+1
+E42A  B6 01 34       531          LDAA    ADRPTR
+E42D  89 00          532          ADCA    #0
+E42F  B7 01 34       533          STAA    ADRPTR
+E432  FE 01 34       534          LDX     ADRPTR
+E435  BD E0 D0       535          JSR     PRTSTR
+E438  BD E0 EC       536          JSR     RBORDER
+E43B  86 0D          537          LDAA    #13
+E43D  B7 01 36       538          STAA    ROWARG
+E440  86 09          539          LDAA    #9
+E442  B7 01 37       540          STAA    COLARG
+E445  CE E6 ED       541          LDX     #LN_I
+E448  BD E0 D0       542          JSR     PRTSTR
+E44B  CE E7 8E       543          LDX     #OFFSTR
+E44E  B6 01 25       544          LDAA    ECHOV
+E451  27 03          545          BEQ     DM_ECHO
+E453  CE E7 8A       546          LDX     #ONSTR
+E456  BD E0 D0       547  DM_ECHO JSR     PRTSTR
+E459  BD E0 EC       548          JSR     RBORDER
+E45C  86 0E          549          LDAA    #14
+E45E  B7 01 36       550          STAA    ROWARG
+E461  86 09          551          LDAA    #9
+E463  B7 01 37       552          STAA    COLARG
+E466  CE E7 05       553          LDX     #LN_J
+E469  BD E0 D0       554          JSR     PRTSTR
+E46C  BD E0 EC       555          JSR     RBORDER
+E46F  86 0F          556          LDAA    #15
+E471  B7 01 36       557          STAA    ROWARG
+E474  86 09          558          LDAA    #9
+E476  B7 01 37       559          STAA    COLARG
+E479  CE E7 13       560          LDX     #LN_K
+E47C  BD E0 D0       561          JSR     PRTSTR
+E47F  BD E0 EC       562          JSR     RBORDER
+E482  86 10          563          LDAA    #16
+E484  B7 01 36       564          STAA    ROWARG
+E487  86 09          565          LDAA    #9
+E489  B7 01 37       566          STAA    COLARG
+E48C  CE E7 27       567          LDX     #LN_L
+E48F  BD E0 D0       568          JSR     PRTSTR
+E492  BD E0 EC       569          JSR     RBORDER
+E495  86 11          570          LDAA    #17
+E497  B7 01 36       571          STAA    ROWARG
+E49A  86 09          572          LDAA    #9
+E49C  B7 01 37       573          STAA    COLARG
+E49F  CE E7 34       574          LDX     #LN_M
+E4A2  BD E0 D0       575          JSR     PRTSTR
+E4A5  BD E0 EC       576          JSR     RBORDER
+E4A8  86 12          577          LDAA    #18
+E4AA  B7 01 36       578          STAA    ROWARG
+E4AD  86 09          579          LDAA    #9
+E4AF  B7 01 37       580          STAA    COLARG
+E4B2  CE E7 48       581          LDX     #LN_Q
+E4B5  BD E0 D0       582          JSR     PRTSTR
+E4B8  BD E0 EC       583          JSR     RBORDER
+E4BB  86 13          584          LDAA    #19
+E4BD  B7 01 36       585          STAA    ROWARG
+E4C0  86 09          586          LDAA    #9
+E4C2  B7 01 37       587          STAA    COLARG
+E4C5  CE E7 51       588          LDX     #LN_T
+E4C8  BD E0 D0       589          JSR     PRTSTR
+E4CB  BD E0 EC       590          JSR     RBORDER
+E4CE                 591  
+E4CE  86 14          592          LDAA    #20
+E4D0  B7 01 36       593          STAA    ROWARG
+E4D3  86 09          594          LDAA    #9
+E4D5  B7 01 37       595          STAA    COLARG
+E4D8  CE E5 E0       596          LDX     #BORDERM
+E4DB  BD E0 D0       597          JSR     PRTSTR
+E4DE                 598  
+E4DE  FE 01 28       599          LDX     FLASHMSG
+E4E1  27 12          600          BEQ     DM_STAT
+E4E3  86 15          601          LDAA    #21
+E4E5  B7 01 36       602          STAA    ROWARG
+E4E8  86 0B          603          LDAA    #11
+E4EA  B7 01 37       604          STAA    COLARG
+E4ED  FE 01 28       605          LDX     FLASHMSG
+E4F0  BD E0 D0       606          JSR     PRTSTR
+E4F3  20 32          607          BRA     DM_NOFL
+E4F5  86 15          608  DM_STAT LDAA    #21
+E4F7  B7 01 36       609          STAA    ROWARG
+E4FA  86 0B          610          LDAA    #11
+E4FC  B7 01 37       611          STAA    COLARG
+E4FF  CE E7 95       612          LDX     #STAT1
+E502  BD E0 D0       613          JSR     PRTSTR
+E505  CE E7 9C       614          LDX     #STATCV
+E508  B6 01 21       615          LDAA    CONVMODEV
+E50B  27 03          616          BEQ     DM_SC
+E50D  CE E7 A1       617          LDX     #STATBK
+E510  BD E0 D0       618  DM_SC   JSR     PRTSTR
+E513  CE E7 A7       619          LDX     #STAT2
+E516  BD E0 D0       620          JSR     PRTSTR
+E519  CE E7 B2       621          LDX     #STATFL
+E51C  B6 01 22       622          LDAA    DUPLEXV
+E51F  27 03          623          BEQ     DM_SD
+E521  CE E7 B7       624          LDX     #STATHF
+E524  BD E0 D0       625  DM_SD   JSR     PRTSTR
+E527  86 16          626  DM_NOFL LDAA    #22
+E529  B7 01 36       627          STAA    ROWARG
+E52C  86 0B          628          LDAA    #11
+E52E  B7 01 37       629          STAA    COLARG
+E531  CE E7 92       630          LDX     #PROMPT
+E534  BD E0 D0       631          JSR     PRTSTR
+E537  BD E0 FA       632          JSR     SETCURSOR
+E53A  86 17          633          LDAA    #23
+E53C  B7 01 36       634          STAA    ROWARG
+E53F  86 09          635          LDAA    #9
+E541  B7 01 37       636          STAA    COLARG
+E544  CE E5 B5       637          LDX     #BORDERT
+E547  BD E0 D0       638          JSR     PRTSTR
+E54A  39             639          RTS
+E54B                 640  
+E54B                 641  ; ==================================================>
+E54B                 642  ; RESET
+E54B                 643  ; ==================================================>
+E54B                 644  RESET
+E54B  7F 01 27       645          CLR     DONEFLAG
+E54E  7F 01 21       646          CLR     CONVMODEV
+E551  7F 01 22       647          CLR     DUPLEXV
+E554  86 05          648          LDAA    #5
+E556  B7 01 23       649          STAA    WORDSELV
+E559  86 01          650          LDAA    #1
+E55B  B7 01 2A       651          STAA    BAUDV                   ; default /1>
+E55E                 652  ; firmware's own fixed value
+E55E  7F 01 24       653          CLR     PERSV
+E561  7F 01 25       654          CLR     ECHOV
+E564  7F 01 28       655          CLR     FLASHMSG
+E567  7F 01 29       656          CLR     FLASHMSG+1
+E56A  86 A5          657          LDAA    #$A5
+E56C  B7 01 26       658          STAA    GAMEINIT
+E56F  BD E2 17       659          JSR     APPLYACIA
+E572  BD E3 22       660          JSR     DRAWMENU
+E575                 661  
+E575  F6 01 27       662  MAINLP  LDAB    DONEFLAG
+E578  26 FB          663          BNE     MAINLP
+E57A  BD E5 7F       664          JSR     POLLKEY
+E57D  20 F6          665          BRA     MAINLP
+E57F                 666  
+E57F                 667  ; ==================================================>
+E57F  =EA1A          668  KBDTAB  EQU     $EA1A
+E57F                 669  
+E57F                 670  POLLKEY
+E57F  5F             671          CLRB
+E580  F7 78 00       672  PK_SCAN STAB    PIA1
+E583  B6 78 00       673          LDAA    PIA1
+E586  2B 06          674          BMI     PK_HIT
+E588  5C             675          INCB
+E589  C1 58          676          CMPB    #$58
+E58B  26 F3          677          BNE     PK_SCAN
+E58D  39             678          RTS
+E58E  F7 01 31       679  PK_HIT  STAB    TMPB
+E591  58             680          ASLB
+E592  B6 78 02       681          LDAA    PIA1B
+E595  2A 01          682          BPL     PK_NS
+E597  5C             683          INCB
+E598  CE EA 1A       684  PK_NS   LDX     #KBDTAB
+E59B  FF 01 34       685          STX     ADRPTR
+E59E  FB 01 35       686          ADDB    ADRPTR+1
+E5A1  F7 01 35       687          STAB    ADRPTR+1
+E5A4  B6 01 34       688          LDAA    ADRPTR
+E5A7  89 00          689          ADCA    #0
+E5A9  B7 01 34       690          STAA    ADRPTR
+E5AC  FE 01 34       691          LDX     ADRPTR
+E5AF  A6 00          692          LDAA    0,X
+E5B1  BD E1 7C       693          JSR     KEYDISP
+E5B4  39             694          RTS
+E5B5                 695  
+E5B5                 696  ; ==================================================>
+E5B5                 697  ; DATA
+E5B5                 698  ; ==================================================>
+E5B5  2B 2D 2D 2D    699  BORDERT FCB     "+---------------------------------->
+E5E0  2B 2D 2D 2D    700  BORDERM FCB     "+---------------------------------->
+E60B  7C 20 20 20    701  TITLE1  FCB     "|              ADMENU  V1.0        >
+E637  7C 20 20 20    702  TITLE2  FCB     "|          SYSTEM CONFIGURATION    >
+E663                 703  
+E663  7C 20 41 29    704  LN_A    FCB     "| A) Conversation",0
+E675  7C 20 42 29    705  LN_B    FCB     "| B) Block Mode",0
+E685  7C 20 43 29    706  LN_C    FCB     "| C) Half Dplx",0
+E694  7C 20 44 29    707  LN_D    FCB     "| D) Full Dplx",0
+E6A3  7C 20 45 29    708  LN_E    FCB     "| E) Parity",0
+E6AF  7C 20 46 29    709  LN_F    FCB     "| F) Data Bits",0
+E6BE  7C 20 47 29    710  LN_G    FCB     "| G) Stop Bits   FMT: ",0
+E6D5  7C 20 48 29    711  LN_H    FCB     "| H) Baud Rate   RATE: ",0
+E6ED  7C 20 49 29    712  LN_I    FCB     "| I) Local Echo  ECHO: ",0
+E705  7C 20 4A 29    713  LN_J    FCB     "| J) Persnlty",0
+E713  7C 20 4B 29    714  LN_K    FCB     "| K) Polling (stub)",0
+E727  7C 20 4C 29    715  LN_L    FCB     "| L) ShowCfg",0
+E734  7C 20 4D 29    716  LN_M    FCB     "| M) Reset Defaults",0
+E748  7C 20 51 29    717  LN_Q    FCB     "| Q)Quit",0
+E751  7C 20 54 29    718  LN_T    FCB     "| T)Terminal",0
+E75E  37 45 32 00    719  FMTTBL  FCB     "7E2",0,"7O2",0,"7E1",0,"7O1",0
+E76E  38 4E 32 00    720          FCB     "8N2",0,"8N1",0,"8E1",0,"8O1",0
+E77E  2F 31 20 00    721  BAUDTBL FCB     "/1 ",0,"/16",0,"/64",0
+E78A  4F 4E 20 00    722  ONSTR   FCB     "ON ",0
+E78E  4F 46 46 00    723  OFFSTR  FCB     "OFF",0
+E792  3E 20 00       724  PROMPT  FCB     "> ",0
+E795  4D 6F 64 65    725  STAT1   FCB     "Mode: ",0
+E79C  43 4F 4E 56    726  STATCV  FCB     "CONV",0
+E7A1  42 4C 4F 43    727  STATBK  FCB     "BLOCK",0
+E7A7  20 20 44 75    728  STAT2   FCB     "  Duplex: ",0
+E7B2  46 55 4C 4C    729  STATFL  FCB     "FULL",0
+E7B7  48 41 4C 46    730  STATHF  FCB     "HALF",0
+E7BC                 731  
+E7BC  61 64 76 61    732  MSGPERS FCB     "advanced",0
+E7C5  6E 6F 74 20    733  MSGNOPOLL FCB   "not impl.",0
+E7CF  73 68 6F 77    734  MSGSHOWN FCB    "shown above",0
+E7DB  72 65 73 65    735  MSGRESET FCB    "reset",0
+E7E1  52 45 54 55    736  EXITMSG FCB     "RETURNING TO NORMAL OPERATION",0
+E7FF                 737  
+E7FE                 738          ORG     $E7FE
+E7FE  FF FF          739          FCB     $FF,$FF
+
+SYMBOL TABLE
+  HALT     7000  PIA1     7800  PIA1B    7802  ACIA     7A00  CRTRAM   8000
+  SCRW     0050  SCRH     0018  CRTEND   8780  ESCVEC   0067  CONVMODE 0121
+  DUPLEXV  0122  WORDSELV 0123  PERSV    0124  ECHOV    0125  BAUDV    012A
+  GAMEINIT 0126  DONEFLAG 0127  FLASHMSG 0128  TMPA     0130  TMPB     0131
+  TMPX     0132  ADRPTR   0134  ROWARG   0136  COLARG   0137  STRPTR   0138
+  KEYENTRY E002  KE_SKIP  E013  SCRNOUT  E03F  PLUGCB2  E07D  ESCCB    E08A
+  PLUGCB3  E0CA  ESCSEND  E0CB  PRTSTR   E0D0  PS_LOOP  E0D3  PS_DONE  E0EB
+  RBORDER  E0EC  SETCURSO E0FA  CALCADR  E107  CLRSCRN  E167  CS_LOOP  E170
+  KEYDISP  E17C  KD_B     E198  KD_C     E1B4  KD_D     E1D5  KD_E     E1F6
+  KD_WSEL  E202  APPLYACI E217  KD_H     E225  KD_HST   E232  KD_I     E241
+  KD_J     E256  KD_JST   E263  KD_K     E281  KD_L     E28E  KD_M     E29B
+  KD_Q     E2AB  KD_T     E2C9  KD_RDRAW E2D8  KD_DONE  E2DB  SETFLASH E2DC
+  SETDEFLT E2E0  DRAWMENU E322  DM_ECHO  E456  DM_STAT  E4F5  DM_SC    E510
+  DM_SD    E524  DM_NOFL  E527  RESET    E54B  MAINLP   E575  KBDTAB   EA1A
+  POLLKEY  E57F  PK_SCAN  E580  PK_HIT   E58E  PK_NS    E598  BORDERT  E5B5
+  BORDERM  E5E0  TITLE1   E60B  TITLE2   E637  LN_A     E663  LN_B     E675
+  LN_C     E685  LN_D     E694  LN_E     E6A3  LN_F     E6AF  LN_G     E6BE
+  LN_H     E6D5  LN_I     E6ED  LN_J     E705  LN_K     E713  LN_L     E727
+  LN_M     E734  LN_Q     E748  LN_T     E751  FMTTBL   E75E  BAUDTBL  E77E
+  ONSTR    E78A  OFFSTR   E78E  PROMPT   E792  STAT1    E795  STATCV   E79C
+  STATBK   E7A1  STAT2    E7A7  STATFL   E7B2  STATHF   E7B7  MSGPERS  E7BC
+  MSGNOPOL E7C5  MSGSHOWN E7CF  MSGRESET E7DB  EXITMSG  E7E1  
+
+CROSS-REFERENCE TABLE
+SYMBOL          TYP  VAL   DEF     CNT  REFERENCES
+--------------  ---  ----  -----  ----  ------------------------------------
+ACIA            EQU  7A00  L42       1  L299  
+ADRPTR          EQU  0134  L77      45  L172  L174  L175  L176  L177  L178  
+                                        L179  L180  L181  L182  L183  L184  
+                                        L187  L188  L189  L190  L192  L193  
+                                        L195  L196  L198  L199  L200  L202  
+                                        L203  L205  L206  L507  L508  L509  
+                                        L510  L512  L513  L528  L529  L530  
+                                        L531  L533  L534  L685  L686  L687  
+                                        L688  L690  L691  
+APPLYACIA       LAB  E217  L293      4  L283  L309  L402  L659  
+BAUDTBL         LAB  E77E  L721      1  L527  
+BAUDV           EQU  012A  L65       6  L298  L303  L308  L399  L522  L651  
+BORDERM         LAB  E5E0  L700      2  L450  L596  
+BORDERT         LAB  E5B5  L699      2  L431  L637  
+CALCADR         LAB  E107  L171      2  L135  L148  
+CLRSCRN         LAB  E167  L210      3  L357  L377  L425  
+COLARG          EQU  0137  L79      30  L138  L147  L162  L197  L212  L361  
+                                        L430  L437  L443  L449  L456  L463  
+                                        L470  L477  L484  L491  L498  L519  
+                                        L540  L552  L559  L566  L573  L580  
+                                        L587  L595  L604  L611  L629  L636  
+CONVMODEV       EQU  0121  L59       5  L228  L239  L394  L615  L646  
+CRTEND          EQU  8780  L46       1  L217  
+CRTRAM          EQU  8000  L43       1  L213  
+CS_LOOP         LAB  E170  L214      1  L218  
+DM_ECHO         LAB  E456  L547      1  L545  
+DM_NOFL         LAB  E527  L626      1  L607  
+DM_SC           LAB  E510  L618      1  L616  
+DM_SD           LAB  E524  L625      1  L623  
+DM_STAT         LAB  E4F5  L608      1  L600  
+DONEFLAG        EQU  0127  L69       5  L91   L365  L379  L645  L662  
+DRAWMENU        LAB  E322  L424      2  L382  L660  
+DUPLEXV         EQU  0122  L60       5  L250  L263  L395  L622  L647  
+ECHOV           EQU  0125  L64       5  L315  L317  L401  L544  L654  
+ESCCB           LAB  E08A  L111      0  
+ESCSEND         LAB  E0CB  L119     21  L230  L232  L241  L243  L252  L254  
+                                        L256  L265  L267  L269  L330  L332  
+                                        L335  L404  L406  L408  L410  L412  
+                                        L414  L416  L418  
+ESCVEC          EQU  0067  L51       1  L120  
+EXITMSG         LAB  E7E1  L736      1  L362  
+FLASHMSG        EQU  0128  L70      19  L233  L234  L244  L245  L257  L258  
+                                        L270  L271  L284  L285  L310  L311  
+                                        L318  L319  L388  L599  L605  L655  
+                                        L656  
+FMTTBL          LAB  E75E  L719      1  L506  
+GAMEINIT        EQU  0126  L68       2  L88   L658  
+HALT            EQU  7000  L39       1  L103  
+KBDTAB          EQU  EA1A  L668      1  L684  
+KD_B            LAB  E198  L236      1  L226  
+KD_C            LAB  E1B4  L247      1  L237  
+KD_D            LAB  E1D5  L260      1  L248  
+KD_DONE         LAB  E2DB  L383      2  L366  L368  
+KD_E            LAB  E1F6  L273      1  L261  
+KD_H            LAB  E225  L301      1  L278  
+KD_HST          LAB  E232  L308      1  L306  
+KD_I            LAB  E241  L313      1  L302  
+KD_J            LAB  E256  L321      1  L314  
+KD_JST          LAB  E263  L328      1  L326  
+KD_K            LAB  E281  L339      1  L322  
+KD_L            LAB  E28E  L344      1  L340  
+KD_M            LAB  E29B  L349      1  L345  
+KD_Q            LAB  E2AB  L355      1  L350  
+KD_RDRAW        LAB  E2D8  L381     11  L235  L246  L259  L272  L286  L312  
+                                        L320  L338  L343  L348  L354  
+KD_T            LAB  E2C9  L367      1  L356  
+KD_WSEL         LAB  E202  L279      2  L274  L276  
+KEYDISP         LAB  E17C  L224      2  L94   L693  
+KEYENTRY        LAB  E002  L87       0  
+KE_SKIP         LAB  E013  L96       2  L90   L92   
+LN_A            LAB  E663  L704      1  L457  
+LN_B            LAB  E675  L705      1  L464  
+LN_C            LAB  E685  L706      1  L471  
+LN_D            LAB  E694  L707      1  L478  
+LN_E            LAB  E6A3  L708      1  L485  
+LN_F            LAB  E6AF  L709      1  L492  
+LN_G            LAB  E6BE  L710      1  L499  
+LN_H            LAB  E6D5  L711      1  L520  
+LN_I            LAB  E6ED  L712      1  L541  
+LN_J            LAB  E705  L713      1  L553  
+LN_K            LAB  E713  L714      1  L560  
+LN_L            LAB  E727  L715      1  L567  
+LN_M            LAB  E734  L716      1  L574  
+LN_Q            LAB  E748  L717      1  L581  
+LN_T            LAB  E751  L718      1  L588  
+MAINLP          LAB  E575  L662      2  L663  L665  
+MSGNOPOLL       LAB  E7C5  L733      1  L341  
+MSGPERS         LAB  E7BC  L732      1  L336  
+MSGRESET        LAB  E7DB  L735      1  L352  
+MSGSHOWN        LAB  E7CF  L734      1  L346  
+OFFSTR          LAB  E78E  L723      1  L543  
+ONSTR           LAB  E78A  L722      1  L546  
+PERSV           EQU  0124  L63       5  L323  L328  L333  L400  L653  
+PIA1            EQU  7800  L40       2  L672  L673  
+PIA1B           EQU  7802  L41       1  L681  
+PK_HIT          LAB  E58E  L679      1  L674  
+PK_NS           LAB  E598  L684      1  L682  
+PK_SCAN         LAB  E580  L672      1  L677  
+PLUGCB2         LAB  E07D  L109      0  
+PLUGCB3         LAB  E0CA  L113      0  
+POLLKEY         LAB  E57F  L670      1  L664  
+PROMPT          LAB  E792  L724      1  L630  
+PRTSTR          LAB  E0D0  L127     31  L363  L432  L439  L445  L451  L458  
+                                        L465  L472  L479  L486  L493  L500  
+                                        L514  L521  L535  L542  L547  L554  
+                                        L561  L568  L575  L582  L589  L597  
+                                        L606  L613  L618  L620  L625  L631  
+                                        L638  
+PS_DONE         LAB  E0EB  L140      1  L131  
+PS_LOOP         LAB  E0D3  L129      1  L139  
+RBORDER         LAB  E0EC  L145     15  L459  L466  L473  L480  L487  L494  
+                                        L515  L536  L548  L555  L562  L569  
+                                        L576  L583  L590  
+RESET           LAB  E54B  L644      1  L99   
+ROWARG          EQU  0136  L78      28  L164  L173  L211  L359  L428  L435  
+                                        L441  L447  L454  L461  L468  L475  
+                                        L482  L489  L496  L517  L538  L550  
+                                        L557  L564  L571  L578  L585  L593  
+                                        L602  L609  L627  L634  
+SCRH            EQU  0018  L45       0  
+SCRNOUT         LAB  E03F  L102      3  L137  L150  L215  
+SCRW            EQU  0050  L44       0  
+SETCURSOR       LAB  E0FA  L161      1  L632  
+SETDEFLT        LAB  E2E0  L393      1  L351  
+SETFLASH        LAB  E2DC  L387      4  L337  L342  L347  L353  
+STAT1           LAB  E795  L725      1  L612  
+STAT2           LAB  E7A7  L728      1  L619  
+STATBK          LAB  E7A1  L727      1  L617  
+STATCV          LAB  E79C  L726      1  L614  
+STATFL          LAB  E7B2  L729      1  L621  
+STATHF          LAB  E7B7  L730      1  L624  
+STRPTR          EQU  0138  L80       3  L128  L129  L133  
+TITLE1          LAB  E60B  L701      1  L438  
+TITLE2          LAB  E637  L702      1  L444  
+TMPA            EQU  0130  L74       0  
+TMPB            EQU  0131  L75       1  L679  
+TMPX            EQU  0132  L76       0  
+WORDSELV        EQU  0123  L61       6  L279  L282  L294  L397  L501  L649  
+
+====================================================================
+ASSEMBLY SUMMARY
+====================================================================
+TOTAL ERRORS: 0
+STATUS: ASSEMBLY SUCCESSFUL - NO ERRORS
+====================================================================
