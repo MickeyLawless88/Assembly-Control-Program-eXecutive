@@ -1,0 +1,120 @@
+* ======================================================================
+* GUESS.ASM - NUMBER GUESSING GAME                       (acpx 6800 sample)
+*
+* The computer picks a secret number 1-100; you get 7 guesses and are told
+* HIGH or LOW. Shows: line input + decimal parsing, 16-bit compare, a PRNG
+* seeded from the time you take to press a key, and string tables.
+* Assemble with ACPX option 2, run with:  python sim6800.py GUESS.S19
+* ======================================================================
+@HEADER@
+SECRET  EQU   USER              the number to find
+TRIES   EQU   USER+1            guesses used so far
+GAMES   EQU   USER+2            games played
+WINS    EQU   USER+3            games won
+MAXTRY  EQU   7
+*
+        ORG   $E000
+@KERNEL@
+*
+MAIN    LDX   #BANNER
+        JSR   PRSTR
+        CLR   GAMES
+        CLR   WINS
+NEWGAME LDX   #SHUFFLE
+        JSR   PRSTR
+        JSR   GETC              the wait seeds the random generator
+        JSR   CRLF
+        LDAB  #100
+        JSR   RANDN             A = 0..99
+        INCA
+        STAA  SECRET            1..100
+        CLR   TRIES
+        INC   GAMES
+ASK     LDX   #PROMPT
+        JSR   PRSTR
+        JSR   GETLINE
+        LDX   #BUF
+        JSR   PARSE
+        BCS   BAD               no digits / overflow
+        LDAA  0,X
+        BNE   BAD               junk after the number
+        LDAA  NUM
+        BNE   BAD               more than 255
+        LDAA  NUM+1
+        BEQ   BAD               zero
+        CMPA  #100
+        BHI   BAD
+        INC   TRIES
+        CMPA  SECRET
+        BEQ   WIN
+        BCS   LOW               guess < secret (unsigned borrow)
+        LDX   #TOOHIGH
+        BRA   SHOW
+LOW     LDX   #TOOLOW
+SHOW    JSR   PRSTR
+        LDAA  TRIES
+        CMPA  #MAXTRY
+        BNE   ASK
+        LDX   #LOSE1
+        JSR   PRSTR
+        CLR   NUM
+        LDAA  SECRET
+        STAA  NUM+1
+        JSR   PRDEC
+        LDX   #LOSE2
+        JSR   PRSTR
+        BRA   AGAIN
+BAD     LDX   #BADMSG
+        JSR   PRSTR
+        BRA   ASK
+WIN     INC   WINS
+        LDX   #WIN1
+        JSR   PRSTR
+        CLR   NUM
+        LDAA  TRIES
+        STAA  NUM+1
+        JSR   PRDEC
+        LDX   #WIN2
+        JSR   PRSTR
+AGAIN   LDX   #SCORE1
+        JSR   PRSTR
+        CLR   NUM
+        LDAA  WINS
+        STAA  NUM+1
+        JSR   PRDEC
+        LDX   #SCORE2
+        JSR   PRSTR
+        CLR   NUM
+        LDAA  GAMES
+        STAA  NUM+1
+        JSR   PRDEC
+        LDX   #SCORE3
+        JSR   PRSTR
+        JSR   GETC
+        ANDA  #$DF              fold to upper case
+        CMPA  #'Y
+        BEQ   ANOTHER
+        JSR   CRLF
+        LDX   #BYE
+        JSR   PRSTR
+        WAI
+ANOTHER JSR   CRLF
+        JMP   NEWGAME
+*
+BANNER  FCB   CR,LF,"*** GUESS - A NUMBER GAME FOR THE MC6800 ***",CR,LF
+        FCB   "I AM THINKING OF A NUMBER FROM 1 TO 100.",CR,LF
+        FCB   "YOU HAVE 7 GUESSES.",CR,LF,0
+SHUFFLE FCB   CR,LF,"PRESS ANY KEY TO SHUFFLE... ",0
+PROMPT  FCB   "YOUR GUESS? ",0
+TOOLOW  FCB   "  TOO LOW.",CR,LF,0
+TOOHIGH FCB   "  TOO HIGH.",CR,LF,0
+BADMSG  FCB   "  PLEASE ENTER A WHOLE NUMBER 1-100.",CR,LF,0
+WIN1    FCB   "  *** CORRECT! YOU NEEDED ",0
+WIN2    FCB   " GUESS(ES). ***",CR,LF,0
+LOSE1   FCB   "  SORRY, OUT OF GUESSES. THE NUMBER WAS ",0
+LOSE2   FCB   ".",CR,LF,0
+SCORE1  FCB   "SCORE: ",0
+SCORE2  FCB   " WON OF ",0
+SCORE3  FCB   " PLAYED.  PLAY AGAIN (Y/N)? ",0
+BYE     FCB   "THANKS FOR PLAYING. (MACHINE HALTED)",CR,LF,0
+@VECTORS@

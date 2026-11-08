@@ -1,0 +1,265 @@
+* ======================================================================
+* HANGMAN.ASM - GUESS THE WORD, ONE LETTER AT A TIME      (acpx 6800 sample)
+*
+* The computer picks one of 16 words about the 6800. Press a letter (no
+* ENTER needed); six wrong guesses lose the game. Shows: a table of string
+* pointers (FDB of labels), indexed lookups through X, a 26-byte "letters
+* used" array, conditional drawing, and a random pick via RANDN.
+* ======================================================================
+@HEADER@
+WORDP   EQU   USER              pointer to the chosen word (2 bytes)
+WPTR    EQU   USER+2           running pointer (2 bytes)
+WRONG   EQU   USER+4           wrong guesses so far
+UNREV   EQU   USER+5           letters still hidden
+IDX     EQU   USER+6           loop index
+WINS    EQU   USER+7
+LOSSES  EQU   USER+8
+USED    EQU   USER+10          26 flags: letter already guessed
+NWORDS  EQU   16
+MAXWRONG EQU  6
+*
+        ORG   $E000
+@KERNEL@
+*
+MAIN    LDX   #BANNER
+        JSR   PRSTR
+        CLR   WINS
+        CLR   LOSSES
+NEWGAME CLR   WRONG
+        LDX   #USED             clear the 26 "used" flags
+        LDAB  #26
+NG1     CLR   0,X
+        INX
+        DECB
+        BNE   NG1
+        LDX   #PRESS
+        JSR   PRSTR
+        JSR   GETC              the wait seeds the random generator
+        JSR   CRLF
+        LDAB  #NWORDS
+        JSR   RANDN             A = 0..15
+        LDX   #WTAB
+        TSTA
+        BEQ   NG3
+NG2     INX                     X = WTAB + 2*A
+        INX
+        DECA
+        BNE   NG2
+NG3     LDX   0,X               X = pointer to the word
+        STX   WORDP
+*
+TURN    JSR   DRAWMAN
+        LDAA  UNREV
+        BEQ   WON
+        LDAA  WRONG
+        CMPA  #MAXWRONG
+        BEQ   LOST
+        LDX   #ASK
+        JSR   PRSTR
+GETLTR  JSR   GETC
+        CMPA  #'a
+        BCS   LT1
+        CMPA  #'z
+        BHI   LT1
+        SUBA  #$20
+LT1     CMPA  #'A
+        BCS   GETLTR
+        CMPA  #'Z
+        BHI   GETLTR
+        JSR   PUTC              echo the letter
+        PSHA
+        SUBA  #'A
+        TAB
+        JSR   GADDR
+        PULA
+        TST   0,X
+        BNE   DUP
+        INC   0,X               mark it used
+        JSR   INWORD
+        BCC   HIT
+        INC   WRONG
+        LDX   #NOPE
+        BRA   REPLY
+HIT     LDX   #YEP
+REPLY   JSR   PRSTR
+        BRA   TURN
+DUP     LDX   #DUPM
+        JSR   PRSTR
+        BRA   GETLTR
+*
+WON     INC   WINS
+        LDX   #WONM
+        BRA   DONE
+LOST    INC   LOSSES
+        LDX   #LOSTM
+        JSR   PRSTR
+        LDX   WORDP
+DONE    JSR   PRSTR
+        LDX   #SCORE
+        JSR   PRSTR
+        CLR   NUM
+        LDAA  WINS
+        STAA  NUM+1
+        JSR   PRDEC
+        LDX   #SCORE2
+        JSR   PRSTR
+        CLR   NUM
+        LDAA  LOSSES
+        STAA  NUM+1
+        JSR   PRDEC
+        LDX   #AGAIN
+        JSR   PRSTR
+        JSR   GETC
+        ANDA  #$DF
+        CMPA  #'Y
+        BNE   QUIT
+        JSR   CRLF
+        JMP   NEWGAME
+QUIT    JSR   CRLF
+        LDX   #BYE
+        JSR   PRSTR
+        WAI
+*
+* GADDR: B = 0..25 -> X = address of USED[B].  Preserves A and B.
+GADDR   LDX   #USED
+        TSTB
+        BEQ   GA9
+        PSHB
+GA1     INX
+        DECB
+        BNE   GA1
+        PULB
+GA9     RTS
+*
+* INWORD: is letter A in the word?  C=0 yes, C=1 no.  Preserves A.
+INWORD  LDX   WORDP
+IW1     TST   0,X
+        BEQ   IWNO
+        CMPA  0,X
+        BEQ   IWYES
+        INX
+        BRA   IW1
+IWYES   CLC
+        RTS
+IWNO    SEC
+        RTS
+*
+* PCOND: print A if WRONG >= B, else a space.
+PCOND   CMPB  WRONG
+        BLS   PC1               B <= WRONG: show the part
+        LDAA  #SPACE
+PC1     JMP   PUTC
+*
+DRAWMAN JSR   CRLF
+        LDX   #GAL1
+        JSR   PRSTR
+        LDAA  #'O               head
+        LDAB  #1
+        JSR   PCOND
+        LDX   #GAL2
+        JSR   PRSTR
+        LDAA  #'/               left arm
+        LDAB  #3
+        JSR   PCOND
+        LDAA  #'|               body
+        LDAB  #2
+        JSR   PCOND
+        LDAA  #$5C              right arm (backslash)
+        LDAB  #4
+        JSR   PCOND
+        LDX   #GAL3
+        JSR   PRSTR
+        LDAA  #'/               left leg
+        LDAB  #5
+        JSR   PCOND
+        LDAA  #SPACE
+        JSR   PUTC
+        LDAA  #$5C              right leg
+        LDAB  #6
+        JSR   PCOND
+        LDX   #GAL4
+        JSR   PRSTR
+*       the word with unguessed letters hidden
+        LDX   WORDP
+        STX   WPTR
+        CLR   UNREV
+DW1     LDX   WPTR
+        LDAA  0,X
+        BEQ   DW9
+        INX
+        STX   WPTR
+        PSHA
+        SUBA  #'A
+        TAB
+        JSR   GADDR
+        PULA
+        TST   0,X
+        BNE   DW2
+        INC   UNREV
+        LDAA  #'_
+DW2     JSR   PUTC
+        LDAA  #SPACE
+        JSR   PUTC
+        BRA   DW1
+DW9     JSR   CRLF
+*       letters tried that are not in the word
+        LDX   #MISSED
+        JSR   PRSTR
+        CLR   IDX
+DM1     LDAB  IDX
+        JSR   GADDR
+        TST   0,X
+        BEQ   DM2
+        LDAA  IDX
+        ADDA  #'A
+        JSR   INWORD
+        BCC   DM2               in the word: not a miss
+        JSR   PUTC
+        LDAA  #SPACE
+        JSR   PUTC
+DM2     INC   IDX
+        LDAA  IDX
+        CMPA  #26
+        BNE   DM1
+        JSR   CRLF
+        RTS
+*
+BANNER  FCB   CR,LF,"*** HANGMAN ON THE MC6800 ***",CR,LF
+        FCB   "THE WORDS ARE ALL ABOUT THE 6800 AND ITS TOOLS.",CR,LF,0
+PRESS   FCB   CR,LF,"PRESS A KEY TO PICK A WORD... ",0
+GAL1    FCB   "  +---+",CR,LF,"  |   |",CR,LF,"  ",0
+GAL2    FCB   "   |",CR,LF," ",0
+GAL3    FCB   "  |",CR,LF," ",0
+GAL4    FCB   "  |",CR,LF,"      |",CR,LF,"=========",CR,LF,0
+MISSED  FCB   "MISSED: ",0
+ASK     FCB   "GUESS A LETTER? ",0
+YEP     FCB   "  - YES!",CR,LF,0
+NOPE    FCB   "  - NO.",CR,LF,0
+DUPM    FCB   CR,LF,"YOU TRIED THAT ONE ALREADY. ",0
+WONM    FCB   CR,LF,"*** YOU GOT IT! ***",CR,LF,0
+LOSTM   FCB   CR,LF,"*** HANGED! THE WORD WAS ",0
+SCORE   FCB   CR,LF,"WON ",0
+SCORE2  FCB   "  LOST ",0
+AGAIN   FCB   CR,LF,"ANOTHER WORD (Y/N)? ",0
+BYE     FCB   "GOODBYE. (MACHINE HALTED)",CR,LF,0
+*
+* table of pointers to the words
+WTAB    FDB   W0,W1,W2,W3,W4,W5,W6,W7
+        FDB   W8,W9,W10,W11,W12,W13,W14,W15
+W0      FCB   "MOTOROLA",0
+W1      FCB   "ASSEMBLER",0
+W2      FCB   "ACCUMULATOR",0
+W3      FCB   "REGISTER",0
+W4      FCB   "INTERRUPT",0
+W5      FCB   "EXTENDED",0
+W6      FCB   "INDEXED",0
+W7      FCB   "MNEMONIC",0
+W8      FCB   "DIRECTIVE",0
+W9      FCB   "SUBROUTINE",0
+W10     FCB   "PROGRAM",0
+W11     FCB   "PROCESSOR",0
+W12     FCB   "TERMINAL",0
+W13     FCB   "BRANCH",0
+W14     FCB   "OVERFLOW",0
+W15     FCB   "CARRY",0
+@VECTORS@
